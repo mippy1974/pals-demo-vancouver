@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>P.A.L.S. — Pet Awareness for Living Safely™</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0d1f1f; font-family: 'DM Mono', 'Courier New', monospace; overflow-x: hidden; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    const TEAL = "#1A7A7A";
+    const GOLD = "#C8A84B";
+    const DARK = "#0d1f1f";
+    const PANEL = "#112828";
+
+    const ZONES = [
+      { id: "hallway",  label: "Hallway",     x: 40,  y: 20,  w: 120, h: 260, risk: 0.85 },
+      { id: "bathroom", label: "Bathroom",    x: 320, y: 20,  w: 110, h: 110, risk: 0.9  },
+      { id: "bedroom",  label: "Bedroom",     x: 320, y: 160, w: 170, h: 120, risk: 0.6  },
+      { id: "kitchen",  label: "Kitchen",     x: 170, y: 20,  w: 140, h: 120, risk: 0.8  },
+      { id: "living",   label: "Living Room", x: 170, y: 160, w: 140, h: 120, risk: 0.45 },
+      { id: "stairs",   label: "Stairs",      x: 40,  y: 290, w: 120, h: 60,  risk: 1.0  },
+    ];
+
+    const PET_PATH = [
+      {x:310,y:240},{x:270,y:220},{x:220,y:200},{x:160,y:180},
+      {x:120,y:140},{x:120,y:80},{x:220,y:80},{x:310,y:100},
+      {x:370,y:220},{x:310,y:240},
+    ];
+    const RESIDENT_PATH = [
+      {x:240,y:220},{x:240,y:200},{x:180,y:180},{x:100,y:180},
+      {x:100,y:100},{x:240,y:100},{x:360,y:80},{x:360,y:220},{x:240,y:220},
+    ];
+
+    function lerp(a,b,t){ return a+(b-a)*t; }
+    function dist(a,b){ return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2); }
+
+    function interpolatePath(path, t) {
+      const seg = t * (path.length - 1);
+      const i = Math.floor(seg);
+      const frac = seg - i;
+      const a = path[Math.min(i, path.length-1)];
+      const b = path[Math.min(i+1, path.length-1)];
+      return { x: lerp(a.x, b.x, frac), y: lerp(a.y, b.y, frac) };
+    }
+
+    function getZone(pt) {
+      return ZONES.find(z => pt.x>=z.x && pt.x<=z.x+z.w && pt.y>=z.y && pt.y<=z.y+z.h);
+    }
+
+    function App() {
+      const [tick, setTick] = useState(0);
+      const [alerts, setAlerts] = useState([]);
+      const [alertMode, setAlertMode] = useState("pet-greeting");
+      const [agencyPaused, setAgencyPaused] = useState(false);
+      const [fallDemo, setFallDemo] = useState(false);
+      const [fallDetected, setFallDetected] = useState(false);
+      const [fatigue, setFatigue] = useState(0);
+      const canvasRef = useRef(null);
+      const alertTimeRef = useRef(0);
+      const speed = 0.003;
+
+      useEffect(() => {
+        if (agencyPaused) return;
+        const id = setInterval(() => setTick(t => t+1), 40);
+        return () => clearInterval(id);
+      }, [agencyPaused]);
+
+      useEffect(() => {
+        if (fallDemo) {
+          const t = setTimeout(() => setFallDetected(true), 4000);
+          return () => clearTimeout(t);
+        } else { setFallDetected(false); }
+      }, [fallDemo]);
+
+      const t = (tick * speed) % 1;
+      const tPrev = Math.max(0, t - 0.01);
+      const petPos = interpolatePath(PET_PATH, t);
+      const prevPet = interpolatePath(PET_PATH, tPrev);
+      const resPos = interpolatePath(RESIDENT_PATH, t);
+
+      const proximity = dist(petPos, resPos);
+      const approaching = dist(petPos, resPos) < dist(prevPet, resPos);
+      const petZone = getZone(petPos);
+      const zoneRisk = petZone ? petZone.risk : 0.3;
+      const rawRisk = approaching
+        ? Math.max(0,(1-proximity/120))*zoneRisk
+        : Math.max(0,(1-proximity/120))*zoneRisk*0.25;
+      const riskScore = Math.round(rawRisk*100);
+
+      const dx = petPos.x - prevPet.x;
+      const dy = petPos.y - prevPet.y;
+      const angle = Math.atan2(dy,dx)*180/Math.PI;
+
+      // Detect crawler (near stairs/floor area)
+      const isCrawler = petPos.y > 280 && dist(petPos, resPos) > 50;
+      const objLabel = isCrawler ? "👶 Crawler Detected" : "🐱 Pet · Frida";
+
+      // Alert logic
+      useEffect(() => {
+        if (agencyPaused) return;
+        const now = Date.now();
+        const cooldown = alertMode === "loud" ? 3000 : 6000;
+        if (riskScore > 60 && now - alertTimeRef.current > cooldown && approaching) {
+          alertTimeRef.current = now;
+          setFatigue(f => Math.min(100, f+20));
+          const zone = petZone?.label || "nearby";
+          let msg = alertMode === "pet-greeting"
+            ? `🐾 "Hi Frida!" — pet greeted in ${zone}. You may want to pause.`
+            : alertMode === "loud"
+            ? `⚠️ ALERT: Pet approaching in ${zone}. Risk: ${riskScore}/100`
+            : `📳 Silent alert — pet in ${zone} (${riskScore}/100)`;
+          setAlerts(prev => [{id:now, msg, risk:riskScore}, ...prev.slice(0,5)]);
+        }
+        setFatigue(f => Math.max(0, f-0.1));
+      }, [tick]);
+
+      // Heat map canvas
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0,0,500,370);
+        const r = approaching ? 80 : 50;
+        const grad = ctx.createRadialGradient(petPos.x,petPos.y,0,petPos.x,petPos.y,r);
+        if (approaching && riskScore > 65) {
+          grad.addColorStop(0,"rgba(220,60,40,0.55)");
+          grad.addColorStop(0.5,"rgba(220,120,40,0.2)");
+          grad.addColorStop(1,"rgba(220,120,40,0)");
+        } else if (approaching && riskScore > 35) {
+          grad.addColorStop(0,"rgba(200,168,75,0.45)");
+          grad.addColorStop(1,"rgba(200,168,75,0)");
+        } else {
+          grad.addColorStop(0,"rgba(26,122,122,0.25)");
+          grad.addColorStop(1,"rgba(26,122,122,0)");
+        }
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(petPos.x,petPos.y,r,0,Math.PI*2);
+        ctx.fill();
+      }, [petPos, riskScore, approaching]);
+
+      const riskColor = riskScore>65?"#e04040":riskScore>35?GOLD:TEAL;
+      const fatigueColor = fatigue>70?"#e04040":fatigue>40?GOLD:TEAL;
+
+      return (
+        <div style={{fontFamily:"'DM Mono','Courier New',monospace",background:DARK,minHeight:"100vh",color:"#d4eeee"}}>
+          {/* Header */}
+          <div style={{background:`linear-gradient(135deg,${TEAL} 0%,#0d3333 100%)`,padding:"14px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",borderBottom:`2px solid ${GOLD}`}}>
+            <div>
+              <div style={{fontSize:20,fontWeight:700,letterSpacing:3,color:GOLD}}>P.A.L.S.</div>
+              <div style={{fontSize:9,color:"#9dd4d4",letterSpacing:2}}>PET AWARENESS FOR LIVING SAFELY™ · PATENT PENDING · USPTO TM #99664426</div>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <span style={{fontSize:9,color:"#9dd4d4",background:"rgba(26,122,122,0.3)",padding:"3px 10px",borderRadius:20,border:`1px solid ${TEAL}`}}>LIDAR ACTIVE</span>
+              <span style={{fontSize:9,color:GOLD,background:"rgba(200,168,75,0.15)",padding:"3px 10px",borderRadius:20,border:`1px solid ${GOLD}`}}>ALEXA LINKED</span>
+            </div>
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"1fr 320px",minHeight:"calc(100vh - 62px)"}}>
+            {/* LEFT */}
+            <div style={{padding:"16px"}}>
+
+              {/* Direction + Object ID */}
+              <div style={{display:"flex",gap:10,marginBottom:12}}>
+                <div style={{flex:1,background:PANEL,border:`1px solid ${approaching?"#e04040":TEAL}`,borderRadius:8,padding:"10px 14px",display:"flex",alignItems:"center",gap:10}}>
+                  <div>
+                    <div style={{fontSize:9,color:"#9dd4d4",letterSpacing:1}}>DIRECTIONAL APPROACH</div>
+                    <div style={{fontSize:13,color:approaching?"#e04040":TEAL,fontWeight:700}}>
+                      {approaching?"→ Approaching":"← Moving Away — low risk"}
+                    </div>
+                  </div>
+                  <div style={{marginLeft:"auto",fontSize:20,transform:`rotate(${angle}deg)`,transition:"transform 0.4s"}}>→</div>
+                </div>
+                <div style={{background:PANEL,border:`1px solid ${isCrawler?GOLD:TEAL}`,borderRadius:8,padding:"10px 14px",minWidth:170}}>
+                  <div style={{fontSize:9,color:"#9dd4d4",letterSpacing:1}}>OBJECT CLASSIFICATION</div>
+                  <div style={{fontSize:12,color:isCrawler?GOLD:"#d4eeee",fontWeight:700}}>{objLabel}</div>
+                  <div style={{fontSize:9,color:"#5aa"}}>LiDAR point cloud ID</div>
+                </div>
+              </div>
+
+              {/* Floor plan */}
+              <div style={{position:"relative",background:PANEL,borderRadius:10,border:"1px solid #1f4444",overflow:"hidden",marginBottom:12}}>
+                <canvas ref={canvasRef} width={500} height={370} style={{position:"absolute",top:0,left:0,pointerEvents:"none",zIndex:2}}/>
+                <svg width="500" height="370" style={{display:"block",position:"relative",zIndex:1}}>
+                  {ZONES.map(z=>(
+                    <g key={z.id}>
+                      <rect x={z.x} y={z.y} width={z.w} height={z.h} fill={z.risk>0.8?"rgba(200,80,60,0.12)":z.risk>0.6?"rgba(200,168,75,0.08)":"rgba(26,122,122,0.06)"} stroke="#1f4444" strokeWidth={1.5} rx={3}/>
+                      <text x={z.x+z.w/2} y={z.y+z.h/2} textAnchor="middle" dominantBaseline="middle" fill="#3d8888" fontSize={9} fontFamily="monospace" letterSpacing={1}>{z.label.toUpperCase()}</text>
+                      {z.id==="stairs"&&<text x={z.x+z.w/2} y={z.y+z.h/2+12} textAnchor="middle" fill="#7a3a3a" fontSize={8}>⚠ CRITICAL</text>}
+                    </g>
+                  ))}
+
+                  {/* Resident */}
+                  <circle cx={resPos.x} cy={resPos.y} r={13} fill={`${TEAL}33`} stroke={TEAL} strokeWidth={2}/>
+                  <text x={resPos.x} y={resPos.y+1} textAnchor="middle" dominantBaseline="middle" fontSize={11}>👤</text>
+                  <text x={resPos.x} y={resPos.y+22} textAnchor="middle" fill="#9dd4d4" fontSize={7}>RESIDENT</text>
+
+                  {/* Pet direction arrow */}
+                  <defs>
+                    <marker id="arr" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+                      <path d="M0,0 L6,3 L0,6 Z" fill={approaching?"#e04040":TEAL}/>
+                    </marker>
+                  </defs>
+                  <line x1={petPos.x} y1={petPos.y} x2={petPos.x+dx*28} y2={petPos.y+dy*28} stroke={approaching?"#e04040":TEAL} strokeWidth={2} markerEnd="url(#arr)"/>
+
+                  {/* Pet */}
+                  <circle cx={petPos.x} cy={petPos.y} r={11} fill={`${GOLD}33`} stroke={GOLD} strokeWidth={2}/>
+                  <text x={petPos.x} y={petPos.y+1} textAnchor="middle" dominantBaseline="middle" fontSize={10}>🐱</text>
+
+                  {/* Proximity line */}
+                  <line x1={petPos.x} y1={petPos.y} x2={resPos.x} y2={resPos.y} stroke={approaching?"#e0404055":"#1A7A7A44"} strokeWidth={1} strokeDasharray="4,3"/>
+                  <text x={(petPos.x+resPos.x)/2+6} y={(petPos.y+resPos.y)/2} fill="#5aa" fontSize={9}>{Math.round(proximity/5)}cm</text>
+
+                  {/* Fall detection overlay */}
+                  {fallDetected&&(
+                    <g>
+                      <rect x={0} y={0} width={500} height={370} fill="rgba(220,40,40,0.07)"/>
+                      <rect x={60} y={155} width={380} height={60} fill="rgba(0,0,0,0.7)" rx={6}/>
+                      <text x={250} y={180} textAnchor="middle" fill="#e04040" fontSize={14} fontWeight={700} fontFamily="monospace">⚠ NON-RESPONSIVE FALL DETECTED</text>
+                      <text x={250} y={200} textAnchor="middle" fill="#9dd4d4" fontSize={9} fontFamily="monospace">LiDAR: motionless ground-level mass · Alerting caregiver</text>
+                    </g>
+                  )}
+                </svg>
+              </div>
+
+              {/* Controls row */}
+              <div style={{display:"flex",gap:10}}>
+                {/* Alert mode */}
+                <div style={{flex:1,background:PANEL,borderRadius:8,padding:"10px 14px",border:"1px solid #1f4444"}}>
+                  <div style={{fontSize:9,color:"#9dd4d4",letterSpacing:1,marginBottom:7}}>ALERT MODE</div>
+                  <div style={{display:"flex",gap:6}}>
+                    {[{id:"pet-greeting",label:"🐾 Pet Greeting",sub:'"Hi Frida!"'},{id:"loud",label:"📣 Vocal Alert",sub:"Alexa speaks"},{id:"silent",label:"📳 Silent",sub:"App only"}].map(m=>(
+                      <button key={m.id} onClick={()=>setAlertMode(m.id)} style={{flex:1,padding:"6px 4px",borderRadius:6,cursor:"pointer",background:alertMode===m.id?`${TEAL}44`:"transparent",border:`1px solid ${alertMode===m.id?TEAL:"#2a5555"}`,color:alertMode===m.id?"#d4eeee":"#5aa",fontSize:10,textAlign:"center"}}>
+                        <div style={{fontWeight:700}}>{m.label}</div>
+                        <div style={{color:"#7bbabb",marginTop:2,fontSize:9}}>{m.sub}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Agency */}
+                <div style={{background:PANEL,borderRadius:8,padding:"10px 14px",border:"1px solid #1f4444",minWidth:130}}>
+                  <div style={{fontSize:9,color:"#9dd4d4",letterSpacing:1,marginBottom:7}}>CLIENT AGENCY</div>
+                  <button onClick={()=>setAgencyPaused(p=>!p)} style={{width:"100%",padding:"8px",borderRadius:6,cursor:"pointer",background:agencyPaused?`${GOLD}33`:"transparent",border:`1px solid ${agencyPaused?GOLD:"#2a5555"}`,color:agencyPaused?GOLD:"#5aa",fontSize:11,fontWeight:700}}>
+                    {agencyPaused?"▶ RESUME":"⏸ PAUSE"}
+                  </button>
+                  <div style={{fontSize:9,color:"#5aa",marginTop:5,textAlign:"center"}}>Client controls alerts</div>
+                </div>
+                {/* Fall */}
+                <div style={{background:PANEL,borderRadius:8,padding:"10px 14px",border:"1px solid #1f4444",minWidth:130}}>
+                  <div style={{fontSize:9,color:"#9dd4d4",letterSpacing:1,marginBottom:7}}>FALL DETECTION</div>
+                  <button onClick={()=>setFallDemo(p=>!p)} style={{width:"100%",padding:"8px",borderRadius:6,cursor:"pointer",background:fallDemo?"rgba(220,60,40,0.25)":"transparent",border:`1px solid ${fallDemo?"#e04040":"#2a5555"}`,color:fallDemo?"#e04040":"#5aa",fontSize:11,fontWeight:700}}>
+                    {fallDemo?"🔴 ACTIVE":"DEMO FALL"}
+                  </button>
+                  <div style={{fontSize:9,color:"#5aa",marginTop:5,textAlign:"center"}}>LiDAR non-responsive</div>
+                </div>
+              </div>
+            </div>
+
+            {/* RIGHT PANEL */}
+            <div style={{background:"#0a1a1a",borderLeft:"2px solid #1f4444",padding:"16px",display:"flex",flexDirection:"column",gap:12,overflowY:"auto"}}>
+              {/* Risk score */}
+              <div style={{background:PANEL,borderRadius:10,padding:"14px 16px",border:`1px solid ${riskColor}44`}}>
+                <div style={{fontSize:9,color:"#9dd4d4",letterSpacing:1,marginBottom:4}}>RISK SCORE</div>
+                <div style={{fontSize:44,fontWeight:700,color:riskColor,lineHeight:1}}>{riskScore}</div>
+                <div style={{fontSize:9,color:"#5aa"}}>/100 · {approaching?"APPROACHING":"RETREATING — low risk"}</div>
+                <div style={{marginTop:8,background:"#0d1f1f",borderRadius:6,height:7,overflow:"hidden"}}>
+                  <div style={{width:`${riskScore}%`,background:`linear-gradient(90deg,${TEAL},${riskColor})`,height:"100%",transition:"width 0.5s",borderRadius:6}}/>
+                </div>
+                <div style={{fontSize:8,color:"#5aa",marginTop:5}}>{approaching?`Zone: ${petZone?.label||"open"} · Weight: ${Math.round((petZone?.risk||0.3)*100)}%`:"Pet moving away — not a risk factor"}</div>
+              </div>
+
+              {/* Vigilance fatigue */}
+              <div style={{background:PANEL,borderRadius:10,padding:"14px 16px",border:"1px solid #1f4444"}}>
+                <div style={{fontSize:9,color:"#9dd4d4",letterSpacing:1,marginBottom:4}}>VIGILANCE FATIGUE</div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{fontSize:22,fontWeight:700,color:fatigueColor}}>{Math.round(fatigue)}</div>
+                  <div style={{flex:1,background:"#0d1f1f",borderRadius:6,height:7,overflow:"hidden"}}>
+                    <div style={{width:`${fatigue}%`,background:fatigueColor,height:"100%",transition:"width 0.5s",borderRadius:6}}/>
+                  </div>
+                </div>
+                <div style={{fontSize:8,color:"#5aa",marginTop:4}}>Pet Greeting mode keeps fatigue low. Recovers automatically.</div>
+              </div>
+
+              {/* Pet greeting box */}
+              <div style={{background:`${GOLD}11`,borderRadius:10,padding:"12px 14px",border:`1px solid ${GOLD}44`}}>
+                <div style={{fontSize:9,color:GOLD,letterSpacing:1,marginBottom:5}}>🐾 PET GREETING MODE</div>
+                <div style={{fontSize:10,color:"#c8d4c8",lineHeight:1.6}}>
+                  Alexa says <span style={{color:GOLD}}>"Hi Frida!"</span> — the pet slows, the resident gets a gentle cue. No alarming announcement. Reduces vigilance fatigue while preserving client agency.
+                </div>
+              </div>
+
+              {/* Alert log */}
+              <div style={{flex:1,background:PANEL,borderRadius:10,padding:"12px 14px",border:"1px solid #1f4444"}}>
+                <div style={{fontSize:9,color:"#9dd4d4",letterSpacing:1,marginBottom:8}}>ALERT LOG</div>
+                {alerts.length===0&&<div style={{fontSize:10,color:"#3d7a7a",textAlign:"center",marginTop:16}}>No alerts yet</div>}
+                {alerts.map(a=>(
+                  <div key={a.id} style={{background:"#0d1f1f",borderRadius:6,padding:"7px 10px",marginBottom:6,borderLeft:`3px solid ${a.risk>65?"#e04040":GOLD}`}}>
+                    <div style={{fontSize:10,color:"#9dd4d4"}}>{a.msg}</div>
+                    <div style={{fontSize:8,color:"#3d7a7a",marginTop:2}}>{new Date(a.id).toLocaleTimeString()}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Object legend */}
+              <div style={{background:PANEL,borderRadius:10,padding:"12px 14px",border:"1px solid #1f4444"}}>
+                <div style={{fontSize:9,color:"#9dd4d4",letterSpacing:1,marginBottom:8}}>OBJECT ID · LiDAR</div>
+                {[
+                  {icon:"🐱",label:"Pet",color:GOLD,note:"Low mobile mass, animal gait"},
+                  {icon:"👶",label:"Crawler / Grandchild",color:GOLD,note:"Ground-level slow mass — soft alert"},
+                  {icon:"👤",label:"Resident",color:TEAL,note:"Upright or mobility aid"},
+                  {icon:"⚠️",label:"Non-responsive fall",color:"#e04040",note:"Motionless — emergency alert"},
+                ].map(item=>(
+                  <div key={item.label} style={{display:"flex",alignItems:"flex-start",gap:8,marginBottom:7}}>
+                    <span style={{fontSize:13}}>{item.icon}</span>
+                    <div>
+                      <div style={{fontSize:10,color:item.color,fontWeight:700}}>{item.label}</div>
+                      <div style={{fontSize:8,color:"#5aa"}}>{item.note}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{fontSize:8,color:"#2d5a5a",textAlign:"center",lineHeight:1.6}}>
+                P.A.L.S. · USPTO TM #99664426 · Patent Pending<br/>
+                The Gerontechnology Group<br/>
+                Dr. Melissa Mansfield, PhD, NAPG-C · Dignity-Centered AI™
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+  </script>
+</body>
+</html>
